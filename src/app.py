@@ -410,7 +410,7 @@ def fetch_logs(limit=50, search='', message_type='', chat_type=''):
     return rows
 
 
-def render_html(rows, search='', message_type='', chat_type='', limit=100):
+def render_html(rows, search='', message_type='', chat_type='', limit=100, form_action='viewer'):
     items = []
     for row in rows:
         preview = ''
@@ -468,7 +468,7 @@ def render_html(rows, search='', message_type='', chat_type='', limit=100):
         <h1 style='margin-bottom:8px'>Loging Inbox Viewer</h1>
         <p style='margin-top:0;color:#4b5563'>Recent inbound messages from Whatsapp Engine.</p>
 
-        <form method='get' action='/viewer' style='display:flex;gap:10px;flex-wrap:wrap;background:#fff;padding:14px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:18px'>
+        <form method='get' action='{escape_html(form_action)}' style='display:flex;gap:10px;flex-wrap:wrap;background:#fff;padding:14px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:18px'>
           <input type='text' name='q' placeholder='Search sender, chat, text, caption...' value='{search_value}' style='flex:1;min-width:260px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
           <select name='message_type' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
             <option value='' {selected(selected_msg_type, '')}>All types</option>
@@ -491,7 +491,7 @@ def render_html(rows, search='', message_type='', chat_type='', limit=100):
             <option value='200' {selected(str(limit), '200')}>200</option>
           </select>
           <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff'>Apply</button>
-          <a href='/viewer' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>Reset</a>
+          <a href='{escape_html(form_action)}' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>Reset</a>
         </form>
 
         {''.join(items) if items else '<div style="background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px">No logs found.</div>'}
@@ -521,7 +521,8 @@ class Handler(BaseHTTPRequestHandler):
             chat_type = (query.get('chat_type') or [''])[0].strip()
             limit = max(1, min(500, int((query.get('limit') or ['100'])[0])))
             rows = fetch_logs(limit, search, message_type, chat_type)
-            body = render_html(rows, search, message_type, chat_type, limit).encode('utf-8')
+            form_action = os.environ.get('VIEWER_FORM_ACTION', 'viewer')
+            body = render_html(rows, search, message_type, chat_type, limit, form_action).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
