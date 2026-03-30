@@ -1,0 +1,13 @@
+[Unit]
+Description=Loging Inbox
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/loging\x20inbox
+ExecStart=/usr/bin/python3 /root/.openclaw/workspace/loging\x20inbox/src/app.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
