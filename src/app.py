@@ -410,7 +410,7 @@ def fetch_logs(limit=50, search='', message_type='', chat_type=''):
     return rows
 
 
-def render_html(rows, search='', message_type='', chat_type=''):
+def render_html(rows, search='', message_type='', chat_type='', limit=100):
     items = []
     for row in rows:
         preview = ''
@@ -484,6 +484,12 @@ def render_html(rows, search='', message_type='', chat_type=''):
             <option value='dm' {selected(selected_chat_type, 'dm')}>DM</option>
             <option value='group' {selected(selected_chat_type, 'group')}>Group</option>
           </select>
+          <select name='limit' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
+            <option value='25' {selected(str(limit), '25')}>25</option>
+            <option value='50' {selected(str(limit), '50')}>50</option>
+            <option value='100' {selected(str(limit), '100')}>100</option>
+            <option value='200' {selected(str(limit), '200')}>200</option>
+          </select>
           <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff'>Apply</button>
           <a href='/viewer' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>Reset</a>
         </form>
@@ -501,7 +507,7 @@ class Handler(BaseHTTPRequestHandler):
             return write_json(self, 200, {'ok': True, 'service': 'loging-inbox'})
         if parsed.path == '/logs':
             query = parse_qs(parsed.query)
-            limit = int((query.get('limit') or ['50'])[0])
+            limit = max(1, min(500, int((query.get('limit') or ['50'])[0])))
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
@@ -513,8 +519,9 @@ class Handler(BaseHTTPRequestHandler):
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
-            rows = fetch_logs(100, search, message_type, chat_type)
-            body = render_html(rows, search, message_type, chat_type).encode('utf-8')
+            limit = max(1, min(500, int((query.get('limit') or ['100'])[0])))
+            rows = fetch_logs(limit, search, message_type, chat_type)
+            body = render_html(rows, search, message_type, chat_type, limit).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
