@@ -9,6 +9,15 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
+def format_timestamp(ts):
+    if not ts: return ""
+    try:
+        if isinstance(ts, (int, float)):
+            return datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+        return str(ts)
+    except:
+        return str(ts)
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MEDIA_DIR = os.path.join(DATA_DIR, 'media')
@@ -333,7 +342,7 @@ def render_html(rows):
           <div>Type: {row.get('message_type')}</div>
           <div>Text: {row.get('text_content') or ''}</div>
           <div>Caption: {row.get('caption') or ''}</div>
-          <div>Timestamp: {row.get('timestamp') or ''}</div>
+          <div>Timestamp: {format_timestamp(row.get('timestamp'))}</div>
           {preview}
           <div><b>Image context:</b> {row.get('summary') or '-'}</div>
           <div><b>OCR:</b> {row.get('ocr_text') or '-'}</div>
