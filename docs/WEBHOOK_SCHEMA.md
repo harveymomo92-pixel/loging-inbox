@@ -7,6 +7,32 @@ Incoming webhook source:
 
 ## Suggested normalized payload
 
+The logger now also tolerates the current real payload shape emitted by Whatsapp Engine fanout, where message fields may look like this:
+
+```json
+{
+  "type": "whatsapp.message",
+  "source": "whatsapp-engine",
+  "chat": {
+    "jid": "83833584128103@lid",
+    "name": "Alfin Rusmindari",
+    "last_message": "hujan gluduk padam"
+  },
+  "message": {
+    "id": "ACADD86EF3FE4B3CAF0A8E44F8C59FAB",
+    "chat_jid": "83833584128103@lid",
+    "sender_jid": "83833584128103@lid",
+    "sender_name": "Alfin Rusmindari",
+    "content": "hujan gluduk padam",
+    "msg_type": "text",
+    "timestamp": 1774857658,
+    "is_group": false
+  }
+}
+```
+
+Logger normalizes this format internally before saving.
+
 ```json
 {
   "type": "whatsapp.message",

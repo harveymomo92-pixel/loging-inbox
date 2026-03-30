@@ -15,6 +15,7 @@ MEDIA_DIR = os.path.join(DATA_DIR, 'media')
 DB_PATH = os.path.join(DATA_DIR, 'inbox.db')
 HOST = '127.0.0.1'
 PORT = int(os.environ.get('PORT', '8570'))
+IMAGE_CONTEXT_MODE = os.environ.get('IMAGE_CONTEXT_MODE', 'placeholder')
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -125,14 +126,14 @@ def download_media(url, message_id, mime_type='image/jpeg'):
     }
 
 
-def fake_image_context(local_path, caption=''):
+def placeholder_image_context(local_path, caption=''):
     filename = os.path.basename(local_path)
     summary = f'Image stored as {filename}. Auto context placeholder. Caption: {caption}'.strip()
     return {
         'summary': summary,
         'objects_json': json.dumps([]),
         'ocr_text': '',
-        'tags_json': json.dumps(['image', 'pending-agent-upgrade']),
+        'tags_json': json.dumps(['image', 'placeholder', 'pending-agent-upgrade']),
         'confidence': 0.1,
         'model_name': 'placeholder-analyzer',
         'status': 'completed',
@@ -140,11 +141,69 @@ def fake_image_context(local_path, caption=''):
     }
 
 
-def save_event(payload):
+def analyze_image_with_agent(local_path, caption=''):
+    """Reserved final-stage hook for real agent vision/context extraction.
+
+    Current behavior intentionally falls back to placeholder mode until the rest
+    of the logging pipeline is considered stable.
+    """
+    raise NotImplementedError('Agent vision is not enabled yet')
+
+
+def resolve_image_context(local_path, caption=''):
+    if IMAGE_CONTEXT_MODE == 'agent':
+        try:
+            return analyze_image_with_agent(local_path, caption)
+        except Exception as error:
+            return {
+                'summary': '',
+                'objects_json': json.dumps([]),
+                'ocr_text': '',
+                'tags_json': json.dumps(['image', 'agent-failed']),
+                'confidence': 0.0,
+                'model_name': 'agent-analyzer',
+                'status': 'failed',
+                'error_text': str(error),
+            }
+    return placeholder_image_context(local_path, caption)
+
+
+def normalize_payload(payload):
     source = payload.get('source', 'unknown')
     event_type = payload.get('type', '')
     chat = payload.get('chat', {}) or {}
     message = payload.get('message', {}) or {}
+
+    normalized_chat = {
+        'jid': chat.get('jid') or message.get('chat_jid') or '',
+        'name': chat.get('name') or message.get('sender_name') or message.get('name') or '',
+        'type': chat.get('type') or ('group' if message.get('is_group') else 'dm') if 'is_group' in message else '',
+    }
+
+    normalized_message = {
+        'id': message.get('id') or message.get('message_id') or f"generated-{int(datetime.utcnow().timestamp())}",
+        'from': message.get('from') or message.get('sender_jid') or '',
+        'name': message.get('name') or message.get('sender_name') or '',
+        'type': message.get('type') or message.get('msg_type') or 'unknown',
+        'content': message.get('content') or '',
+        'caption': message.get('caption') or '',
+        'timestamp': message.get('timestamp'),
+        'mime_type': message.get('mime_type') or '',
+        'media_url': message.get('media_url') or '',
+        'file_name': message.get('file_name') or '',
+        'width': message.get('width'),
+        'height': message.get('height'),
+        'is_group': message.get('is_group'),
+        'chat_jid': message.get('chat_jid') or normalized_chat['jid'],
+        'sender_jid': message.get('sender_jid') or '',
+        'sender_name': message.get('sender_name') or message.get('name') or '',
+    }
+
+    return source, event_type, normalized_chat, normalized_message
+
+
+def save_event(payload):
+    source, event_type, chat, message = normalize_payload(payload)
 
     message_id = message.get('id') or f"generated-{int(datetime.utcnow().timestamp())}"
     message_type = message.get('type', 'unknown')
@@ -163,8 +222,8 @@ def save_event(payload):
       event_type,
       message_id,
       chat.get('jid', ''),
-      message.get('from', ''),
-      message.get('name', ''),
+      message.get('from') or message.get('sender_jid', ''),
+      message.get('name') or message.get('sender_name', ''),
       chat.get('type', ''),
       message_type,
       text_content,
@@ -213,7 +272,7 @@ def save_event(payload):
       ''', (message_id, 'pending', now_iso()))
 
       if local_path:
-          image_context = fake_image_context(local_path, caption)
+          image_context = resolve_image_context(local_path, caption)
           cur.execute('''
             UPDATE image_contexts
             SET summary=?, objects_json=?, ocr_text=?, tags_json=?, confidence=?, model_name=?, status=?, error_text=?, updated_at=?
