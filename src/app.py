@@ -6,9 +6,9 @@ import json
 import os
 import sqlite3
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 
 def format_timestamp(ts):
@@ -43,6 +43,50 @@ def badge_style(value):
     }
     bg = palette.get(value, '#374151')
     return f"display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;color:#fff;background:{bg};margin-right:6px"
+
+
+def parse_int(value, default=None):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def clamp(value, minimum, maximum):
+    return max(minimum, min(maximum, value))
+
+
+def parse_date_to_timestamp(value, end_of_day=False):
+    if not value:
+        return None
+    try:
+        dt = datetime.strptime(value, '%Y-%m-%d')
+        if end_of_day:
+            dt = dt + timedelta(days=1) - timedelta(seconds=1)
+        return int(dt.timestamp())
+    except ValueError:
+        return None
+
+
+def resolve_time_range(time_range, start_date='', end_date=''):
+    now = datetime.now()
+    if time_range == 'today':
+        start = datetime(now.year, now.month, now.day)
+        return int(start.timestamp()), int(now.timestamp())
+    if time_range == '24h':
+        return int((now - timedelta(hours=24)).timestamp()), int(now.timestamp())
+    if time_range == '7d':
+        return int((now - timedelta(days=7)).timestamp()), int(now.timestamp())
+    if time_range == 'custom':
+        start_ts = parse_date_to_timestamp(start_date)
+        end_ts = parse_date_to_timestamp(end_date, end_of_day=True)
+        return start_ts, end_ts
+    return None, None
+
+
+def build_query(params):
+    cleaned = {key: value for key, value in params.items() if value not in ('', None)}
+    return urlencode(cleaned)
 
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -257,7 +301,7 @@ def normalize_payload(payload):
         'type': message.get('type') or message.get('msg_type') or 'unknown',
         'content': message.get('content') or '',
         'caption': message.get('caption') or '',
-        'timestamp': message.get('timestamp'),
+        'timestamp': parse_int(message.get('timestamp'), message.get('timestamp')),
         'mime_type': message.get('mime_type') or '',
         'media_url': message.get('media_url') or '',
         'file_name': message.get('file_name') or '',
@@ -371,7 +415,7 @@ def save_event(payload):
     }
 
 
-def fetch_logs(limit=50, search='', message_type='', chat_type=''):
+def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date=''):
     conn = db()
     cur = conn.cursor()
     clauses = []
@@ -390,9 +434,19 @@ def fetch_logs(limit=50, search='', message_type='', chat_type=''):
         clauses.append('m.chat_type = ?')
         params.append(chat_type)
 
-    where_sql = ''
-    if clauses:
-        where_sql = 'WHERE ' + ' AND '.join(clauses)
+    start_ts, end_ts = resolve_time_range(time_range, start_date, end_date)
+    if start_ts is not None:
+        clauses.append('COALESCE(m.timestamp, 0) >= ?')
+        params.append(start_ts)
+    if end_ts is not None:
+        clauses.append('COALESCE(m.timestamp, 0) <= ?')
+        params.append(end_ts)
+
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
+
+    count_query = f'SELECT COUNT(*) FROM messages m {where_sql}'
+    cur.execute(count_query, tuple(params))
+    total = cur.fetchone()[0]
 
     query = f'''
       SELECT m.*, mf.local_path, mf.mime_type, ic.summary, ic.ocr_text, ic.tags_json, ic.status AS image_context_status
@@ -401,16 +455,16 @@ def fetch_logs(limit=50, search='', message_type='', chat_type=''):
       LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
       {where_sql}
       ORDER BY COALESCE(m.timestamp, 0) DESC, m.id DESC
-      LIMIT ?
+      LIMIT ? OFFSET ?
     '''
-    params.append(limit)
-    cur.execute(query, tuple(params))
+    query_params = params + [limit, offset]
+    cur.execute(query, tuple(query_params))
     rows = [dict(row) for row in cur.fetchall()]
     conn.close()
-    return rows
+    return rows, total
 
 
-def render_html(rows, search='', message_type='', chat_type='', limit=100, form_action='viewer'):
+def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox'):
     items = []
     for row in rows:
         preview = ''
@@ -452,12 +506,35 @@ def render_html(rows, search='', message_type='', chat_type='', limit=100, form_
         </div>
         """)
 
-    search_value = escape_html(search)
     selected_msg_type = message_type or ''
     selected_chat_type = chat_type or ''
+    selected_time_range = time_range or ''
 
     def selected(current, expected):
         return 'selected' if current == expected else ''
+
+    page = (offset // limit) + 1 if limit else 1
+    total_pages = max(1, ((total - 1) // limit) + 1) if limit else 1
+    base_params = {
+        'q': search,
+        'message_type': message_type,
+        'chat_type': chat_type,
+        'limit': str(limit),
+        'time_range': time_range,
+        'start_date': start_date,
+        'end_date': end_date,
+    }
+
+    prev_link = ''
+    next_link = ''
+    if offset > 0:
+        prev_params = dict(base_params)
+        prev_params['offset'] = str(max(0, offset - limit))
+        prev_link = f"<a href='{escape_html(form_action)}?{escape_html(build_query(prev_params))}' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>← Prev</a>"
+    if offset + limit < total:
+        next_params = dict(base_params)
+        next_params['offset'] = str(offset + limit)
+        next_link = f"<a href='{escape_html(form_action)}?{escape_html(build_query(next_params))}' style='padding:10px 16px;border-radius:8px;background:#2563eb;color:#fff;text-decoration:none'>Next →</a>"
 
     return f"""
     <html>
@@ -469,7 +546,7 @@ def render_html(rows, search='', message_type='', chat_type='', limit=100, form_
         <p style='margin-top:0;color:#4b5563'>Recent inbound messages from Whatsapp Engine.</p>
 
         <form method='get' action='{escape_html(form_action)}' style='display:flex;gap:10px;flex-wrap:wrap;background:#fff;padding:14px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:18px'>
-          <input type='text' name='q' placeholder='Search sender, chat, text, caption...' value='{search_value}' style='flex:1;min-width:260px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
+          <input type='text' name='q' placeholder='Search sender, chat, text, caption...' value='{escape_html(search)}' style='flex:1;min-width:220px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
           <select name='message_type' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
             <option value='' {selected(selected_msg_type, '')}>All types</option>
             <option value='text' {selected(selected_msg_type, 'text')}>Text</option>
@@ -484,15 +561,30 @@ def render_html(rows, search='', message_type='', chat_type='', limit=100, form_
             <option value='dm' {selected(selected_chat_type, 'dm')}>DM</option>
             <option value='group' {selected(selected_chat_type, 'group')}>Group</option>
           </select>
+          <select name='time_range' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
+            <option value='' {selected(selected_time_range, '')}>Any time</option>
+            <option value='today' {selected(selected_time_range, 'today')}>Today</option>
+            <option value='24h' {selected(selected_time_range, '24h')}>Last 24h</option>
+            <option value='7d' {selected(selected_time_range, '7d')}>Last 7d</option>
+            <option value='custom' {selected(selected_time_range, 'custom')}>Custom</option>
+          </select>
+          <input type='date' name='start_date' value='{escape_html(start_date)}' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
+          <input type='date' name='end_date' value='{escape_html(end_date)}' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
           <select name='limit' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
             <option value='25' {selected(str(limit), '25')}>25</option>
             <option value='50' {selected(str(limit), '50')}>50</option>
             <option value='100' {selected(str(limit), '100')}>100</option>
             <option value='200' {selected(str(limit), '200')}>200</option>
           </select>
+          <input type='hidden' name='offset' value='0'/>
           <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff'>Apply</button>
           <a href='{escape_html(form_action)}' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>Reset</a>
         </form>
+
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;background:#fff;padding:12px 14px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:16px'>
+          <div><b>Total:</b> {total} logs · <b>Page:</b> {page}/{total_pages}</div>
+          <div style='display:flex;gap:8px'>{prev_link}{next_link}</div>
+        </div>
 
         {''.join(items) if items else '<div style="background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px">No logs found.</div>'}
       </body>
@@ -507,22 +599,34 @@ class Handler(BaseHTTPRequestHandler):
             return write_json(self, 200, {'ok': True, 'service': 'loging-inbox'})
         if parsed.path == '/logs':
             query = parse_qs(parsed.query)
-            limit = max(1, min(500, int((query.get('limit') or ['50'])[0])))
+            limit = clamp(parse_int((query.get('limit') or ['50'])[0], 50), 1, 500)
+            offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
+            time_range = (query.get('time_range') or [''])[0].strip()
+            start_date = (query.get('start_date') or [''])[0].strip()
+            end_date = (query.get('end_date') or [''])[0].strip()
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
             return write_json(self, 200, {
-                'items': fetch_logs(limit, search, message_type, chat_type)
+                'items': rows,
+                'limit': limit,
+                'offset': offset,
+                'total': total,
             })
         if parsed.path == '/viewer':
             query = parse_qs(parsed.query)
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
-            limit = max(1, min(500, int((query.get('limit') or ['100'])[0])))
-            rows = fetch_logs(limit, search, message_type, chat_type)
+            time_range = (query.get('time_range') or [''])[0].strip()
+            start_date = (query.get('start_date') or [''])[0].strip()
+            end_date = (query.get('end_date') or [''])[0].strip()
+            limit = clamp(parse_int((query.get('limit') or ['100'])[0], 100), 1, 500)
+            offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
-            body = render_html(rows, search, message_type, chat_type, limit, form_action).encode('utf-8')
+            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
