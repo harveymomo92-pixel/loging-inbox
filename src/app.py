@@ -521,7 +521,7 @@ class Handler(BaseHTTPRequestHandler):
             chat_type = (query.get('chat_type') or [''])[0].strip()
             limit = max(1, min(500, int((query.get('limit') or ['100'])[0])))
             rows = fetch_logs(limit, search, message_type, chat_type)
-            form_action = os.environ.get('VIEWER_FORM_ACTION', 'viewer')
+            form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
             body = render_html(rows, search, message_type, chat_type, limit, form_action).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
