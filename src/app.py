@@ -515,10 +515,12 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
         summary_text = summary_text.replace('\n', ' ').strip()
         if len(summary_text) > 180:
             summary_text = summary_text[:177] + '...'
+        is_fallback_unknown = text_raw == '[unknown message payload from bridge]'
         summary = escape_html(summary_text or '-')
         msg_type = escape_html(row.get('message_type') or 'unknown')
         chat_badge = escape_html(row.get('chat_type') or 'unknown')
         image_status = escape_html(row.get('image_context_status') or 'n/a')
+        fallback_badge = f"<span style='{badge_style('fallback')}'>{escape_html('fallback')}</span>" if is_fallback_unknown else ''
 
         items.append(f"""
         <div style='border:1px solid #ddd;padding:14px;border-radius:12px;margin-bottom:14px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.04)'>
@@ -528,6 +530,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
               <span style='{badge_style(msg_type)}'>{msg_type}</span>
               <span style='{badge_style(chat_badge)}'>{chat_badge}</span>
               <span style='{badge_style(image_status)}'>{image_status}</span>
+              {fallback_badge}
             </div>
           </div>
           <div style='margin-top:8px;color:#333'><b>Summary:</b> {summary}</div>
