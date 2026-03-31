@@ -589,7 +589,7 @@ def delete_log_record(message_row_id):
     return True, message_id
 
 
-def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox', detail_base='', sender_filter='', group_filter=''):
+def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/viewer', detail_base='', sender_filter='', group_filter=''):
     items = []
     for row in rows:
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
@@ -717,7 +717,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
     """
 
 
-def render_detail_html(row, back_href='/loging-inbox'):
+def render_detail_html(row, back_href='/viewer'):
     if not row:
         return "<html><body><h1>Message not found</h1></body></html>"
 
@@ -780,7 +780,7 @@ def render_detail_html(row, back_href='/loging-inbox'):
         <div style='background:#fff3f2;border:1px solid #fecaca;padding:18px;border-radius:12px'>
           <h2 style='color:#991b1b;margin-top:0'>Danger zone</h2>
           <p style='color:#7f1d1d'>Delete this record from the database manually. Related <code>media_files</code> and <code>image_contexts</code> rows will also be removed. Physical media files are kept.</p>
-          <form method='post' action='/loging-inbox/message/{escape_html(str(row.get('id') or '0'))}/delete' onsubmit="return confirm('Delete this record from database? This cannot be undone from the viewer.');">
+          <form method='post' action='/message/{escape_html(str(row.get('id') or '0'))}/delete' onsubmit="return confirm('Delete this record from database? This cannot be undone from the viewer.');">
             <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#dc2626;color:#fff;cursor:pointer'>Delete record</button>
           </form>
         </div>
@@ -826,8 +826,8 @@ class Handler(BaseHTTPRequestHandler):
             limit = clamp(parse_int((query.get('limit') or ['100'])[0], 100), 1, 500)
             offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
             rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter)
-            form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
-            detail_base = os.environ.get('VIEWER_DETAIL_BASE') or form_action
+            form_action = os.environ.get('VIEWER_FORM_ACTION', '/viewer')
+            detail_base = os.environ.get('VIEWER_DETAIL_BASE') or ''
             body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base, sender_filter, group_filter).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -839,7 +839,7 @@ class Handler(BaseHTTPRequestHandler):
             prefix = '/loging-inbox/message/' if parsed.path.startswith('/loging-inbox/message/') else '/message/'
             message_row_id = parse_int(parsed.path.replace(prefix, ''), 0)
             row = fetch_log_detail(message_row_id)
-            back_href = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
+            back_href = os.environ.get('VIEWER_FORM_ACTION', '/viewer')
             body = render_detail_html(row, back_href).encode('utf-8')
             self.send_response(200 if row else 404)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
@@ -856,7 +856,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, message_id = delete_log_record(message_row_id)
             if ok:
                 self.send_response(303)
-                self.send_header('Location', '/loging-inbox')
+                self.send_header('Location', '/viewer')
                 self.end_headers()
                 return
             return write_json(self, 404, {'error': 'Not found'})
@@ -865,7 +865,7 @@ class Handler(BaseHTTPRequestHandler):
             ok, message_id = delete_log_record(message_row_id)
             if ok:
                 self.send_response(303)
-                self.send_header('Location', '/loging-inbox')
+                self.send_header('Location', '/viewer')
                 self.end_headers()
                 return
             return write_json(self, 404, {'error': 'Not found'})
