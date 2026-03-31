@@ -118,6 +118,7 @@ def init_db():
       event_type TEXT,
       message_id TEXT UNIQUE,
       chat_jid TEXT NOT NULL,
+      group_name TEXT,
       sender_jid TEXT,
       sender_name TEXT,
       chat_type TEXT,
@@ -172,6 +173,10 @@ def init_db():
     CREATE UNIQUE INDEX IF NOT EXISTS idx_image_contexts_unique_message_id ON image_contexts(message_id);
     CREATE INDEX IF NOT EXISTS idx_image_contexts_status ON image_contexts(status);
     ''')
+    try:
+        cur.execute("ALTER TABLE messages ADD COLUMN group_name TEXT")
+    except sqlite3.OperationalError:
+        pass
     for sql in [
         "ALTER TABLE image_contexts ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE image_contexts ADD COLUMN locked_at TEXT",
@@ -381,14 +386,15 @@ def save_event(payload):
     cur = conn.cursor()
     cur.execute('''
       INSERT OR IGNORE INTO messages (
-        source, event_type, message_id, chat_jid, sender_jid, sender_name,
+        source, event_type, message_id, chat_jid, group_name, sender_jid, sender_name,
         chat_type, message_type, text_content, caption, timestamp, raw_payload_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
       source,
       event_type,
       message_id,
       chat.get('jid', ''),
+      chat.get('name', ''),
       message.get('from') or message.get('sender_jid', ''),
       message.get('name') or message.get('sender_name', ''),
       chat.get('type', ''),
@@ -545,7 +551,7 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
     total = cur.fetchone()[0]
 
     query = f'''
-      SELECT m.id, m.message_id, m.chat_jid, m.sender_jid, m.sender_name, m.chat_type, m.message_type,
+      SELECT m.id, m.message_id, m.chat_jid, m.group_name, m.sender_jid, m.sender_name, m.chat_type, m.message_type,
              m.text_content, m.caption, m.timestamp, ic.status AS image_context_status, ic.decision_reason, ic.analysis_source
       FROM messages m
       LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
@@ -663,6 +669,8 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
     for row in rows:
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
         chat_jid = escape_html(row.get('chat_jid') or '-')
+        group_name = escape_html(row.get('group_name') or '')
+        chat_label = f"{group_name} <span style='color:#9ca3af'>({chat_jid})</span>" if (row.get('chat_type') == 'group' and group_name) else chat_jid
         text_raw = row.get('text_content') or ''
         caption_raw = row.get('caption') or ''
         summary_text = text_raw or caption_raw or ''
@@ -681,7 +689,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
         items.append(f"""
         <div style='border:1px solid #ddd;padding:14px;border-radius:12px;margin-bottom:14px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.04)'>
           <div style='display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap'>
-            <div><b>{sender}</b> → <span style='color:#555'>{chat_jid}</span></div>
+            <div><b>{sender}</b> → <span style='color:#555'>{chat_label}</span></div>
             <div>
               <span style='{badge_style(msg_type)}'>{msg_type}</span>
               <span style='{badge_style(chat_badge)}'>{chat_badge}</span>
@@ -824,7 +832,8 @@ def render_detail_html(row, back_href='/viewer'):
           <div><b>ID:</b> {escape_html(str(row.get('id') or '-'))}</div>
           <div><b>Message ID:</b> {escape_html(row.get('message_id') or '-')}</div>
           <div><b>Sender:</b> {escape_html(row.get('sender_name') or row.get('sender_jid') or '-')}</div>
-          <div><b>Chat:</b> {escape_html(row.get('chat_jid') or '-')}</div>
+          <div><b>Chat:</b> {escape_html(row.get('group_name') or row.get('chat_jid') or '-')}</div>
+          <div><b>Chat JID:</b> {escape_html(row.get('chat_jid') or '-')}</div>
           <div><b>Type:</b> {escape_html(row.get('message_type') or '-')}</div>
           <div><b>Chat Type:</b> {escape_html(row.get('chat_type') or '-')}</div>
           <div><b>Timestamp:</b> {escape_html(format_timestamp(row.get('timestamp')) or '-')}</div>
