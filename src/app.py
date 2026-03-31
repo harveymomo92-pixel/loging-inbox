@@ -431,7 +431,7 @@ def save_event(payload):
 def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date=''):
     conn = db()
     cur = conn.cursor()
-    clauses = []
+    clauses = ["NOT (m.message_type = 'unknown' AND COALESCE(m.text_content, '') = '' AND COALESCE(m.caption, '') = '')"]
     params = []
 
     if search:
@@ -477,6 +477,23 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
     return rows, total
 
 
+def fetch_log_detail(message_row_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute('''
+      SELECT m.*, mf.local_path, mf.mime_type, mf.original_url, mf.sha256, mf.file_size, mf.width, mf.height,
+             ic.summary, ic.ocr_text, ic.tags_json, ic.status AS image_context_status, ic.error_text, ic.model_name, ic.confidence
+      FROM messages m
+      LEFT JOIN media_files mf ON mf.message_id = m.message_id
+      LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
+      WHERE m.id = ?
+      LIMIT 1
+    ''', (message_row_id,))
+    row = cur.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox'):
     items = []
     for row in rows:
@@ -516,6 +533,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
           <div style='margin-top:8px'><b>Image context:</b> {summary}</div>
           <div style='margin-top:4px'><b>OCR:</b> {ocr_text}</div>
           <div style='margin-top:4px'><b>Tags:</b> {tags_json}</div>
+          <div style='margin-top:10px'><a href='/message/{escape_html(str(row.get('id')))}' style='color:#2563eb;text-decoration:none'><b>Open detail →</b></a></div>
         </div>
         """)
 
@@ -605,6 +623,66 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
     """
 
 
+def render_detail_html(row):
+    if not row:
+        return "<html><body><h1>Message not found</h1></body></html>"
+
+    preview = ''
+    local_path = row.get('local_path') or ''
+    if local_path and os.path.exists(local_path):
+        with open(local_path, 'rb') as file_obj:
+            b64 = base64.b64encode(file_obj.read()).decode('ascii')
+        mime = row.get('mime_type') or 'image/jpeg'
+        preview = f'<div style="margin-top:12px"><img src="data:{escape_html(mime)};base64,{b64}" style="max-width:320px;border-radius:8px;border:1px solid #ddd"/></div>'
+
+    raw_payload = escape_html(row.get('raw_payload_json') or '{}')
+    return f"""
+    <html>
+      <head><title>Log Detail</title></head>
+      <body style='font-family:sans-serif;max-width:1100px;margin:32px auto;background:#f8fafc;color:#111827'>
+        <a href='/loging-inbox' style='color:#2563eb;text-decoration:none'>← Back to viewer</a>
+        <h1>Message Detail</h1>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
+          <div><b>ID:</b> {escape_html(str(row.get('id') or '-'))}</div>
+          <div><b>Message ID:</b> {escape_html(row.get('message_id') or '-')}</div>
+          <div><b>Sender:</b> {escape_html(row.get('sender_name') or row.get('sender_jid') or '-')}</div>
+          <div><b>Chat:</b> {escape_html(row.get('chat_jid') or '-')}</div>
+          <div><b>Type:</b> {escape_html(row.get('message_type') or '-')}</div>
+          <div><b>Chat Type:</b> {escape_html(row.get('chat_type') or '-')}</div>
+          <div><b>Timestamp:</b> {escape_html(format_timestamp(row.get('timestamp')) or '-')}</div>
+          <div><b>Text:</b> {escape_html(row.get('text_content') or '-')}</div>
+          <div><b>Caption:</b> {escape_html(row.get('caption') or '-')}</div>
+          {preview}
+        </div>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
+          <h2>Media metadata</h2>
+          <div><b>MIME:</b> {escape_html(row.get('mime_type') or '-')}</div>
+          <div><b>Original URL:</b> {escape_html(row.get('original_url') or '-')}</div>
+          <div><b>Local path:</b> {escape_html(row.get('local_path') or '-')}</div>
+          <div><b>SHA256:</b> {escape_html(row.get('sha256') or '-')}</div>
+          <div><b>File size:</b> {escape_html(str(row.get('file_size') or '-'))}</div>
+          <div><b>Width:</b> {escape_html(str(row.get('width') or '-'))}</div>
+          <div><b>Height:</b> {escape_html(str(row.get('height') or '-'))}</div>
+        </div>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
+          <h2>Processing status</h2>
+          <div><b>Status:</b> {escape_html(row.get('image_context_status') or '-')}</div>
+          <div><b>Summary:</b> {escape_html(row.get('summary') or '-')}</div>
+          <div><b>OCR:</b> {escape_html(row.get('ocr_text') or '-')}</div>
+          <div><b>Tags:</b> {escape_html(row.get('tags_json') or '-')}</div>
+          <div><b>Model:</b> {escape_html(row.get('model_name') or '-')}</div>
+          <div><b>Confidence:</b> {escape_html(str(row.get('confidence') or '-'))}</div>
+          <div><b>Error:</b> {escape_html(row.get('error_text') or '-')}</div>
+        </div>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px'>
+          <h2>Raw payload JSON</h2>
+          <pre style='white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px'>{raw_payload}</pre>
+        </div>
+      </body>
+    </html>
+    """
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -641,6 +719,16 @@ class Handler(BaseHTTPRequestHandler):
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
             body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action).encode('utf-8')
             self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path.startswith('/message/'):
+            message_row_id = parse_int(parsed.path.replace('/message/', ''), 0)
+            row = fetch_log_detail(message_row_id)
+            body = render_detail_html(row).encode('utf-8')
+            self.send_response(200 if row else 404)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
