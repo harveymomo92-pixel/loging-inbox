@@ -428,7 +428,7 @@ def save_event(payload):
     }
 
 
-def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date=''):
+def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date='', sender_filter='', group_filter=''):
     conn = db()
     cur = conn.cursor()
     clauses = ["NOT (m.message_type = 'unknown' AND COALESCE(m.text_content, '') = '' AND COALESCE(m.caption, '') = '')"]
@@ -446,6 +446,16 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
     if chat_type:
         clauses.append('m.chat_type = ?')
         params.append(chat_type)
+
+    if sender_filter:
+        clauses.append('(LOWER(COALESCE(m.sender_name, \'\')) LIKE ? OR LOWER(COALESCE(m.sender_jid, \'\')) LIKE ?)')
+        sender_needle = f"%{sender_filter.lower()}%"
+        params.extend([sender_needle, sender_needle])
+
+    if group_filter:
+        clauses.append('LOWER(COALESCE(m.chat_jid, \'\')) LIKE ?')
+        group_needle = f"%{group_filter.lower()}%"
+        params.append(group_needle)
 
     start_ts, end_ts = resolve_time_range(time_range, start_date, end_date)
     if start_ts is not None:
@@ -494,7 +504,7 @@ def fetch_log_detail(message_row_id):
     return dict(row) if row else None
 
 
-def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox', detail_base=''):
+def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox', detail_base='', sender_filter='', group_filter=''):
     items = []
     for row in rows:
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
@@ -539,6 +549,8 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
         'q': search,
         'message_type': message_type,
         'chat_type': chat_type,
+        'sender': sender_filter,
+        'group': group_filter,
         'limit': str(limit),
         'time_range': time_range,
         'start_date': start_date,
@@ -581,6 +593,8 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
             <option value='dm' {selected(selected_chat_type, 'dm')}>DM</option>
             <option value='group' {selected(selected_chat_type, 'group')}>Group</option>
           </select>
+          <input type='text' name='sender' placeholder='Filter user/sender...' value='{escape_html(sender_filter)}' style='min-width:180px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
+          <input type='text' name='group' placeholder='Filter group/chat...' value='{escape_html(group_filter)}' style='min-width:180px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
           <select name='time_range' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
             <option value='' {selected(selected_time_range, '')}>Any time</option>
             <option value='today' {selected(selected_time_range, 'today')}>Today</option>
@@ -684,10 +698,12 @@ class Handler(BaseHTTPRequestHandler):
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
+            sender_filter = (query.get('sender') or [''])[0].strip()
+            group_filter = (query.get('group') or [''])[0].strip()
             time_range = (query.get('time_range') or [''])[0].strip()
             start_date = (query.get('start_date') or [''])[0].strip()
             end_date = (query.get('end_date') or [''])[0].strip()
-            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter)
             return write_json(self, 200, {
                 'items': rows,
                 'limit': limit,
@@ -699,15 +715,17 @@ class Handler(BaseHTTPRequestHandler):
             search = (query.get('q') or [''])[0].strip()
             message_type = (query.get('message_type') or [''])[0].strip()
             chat_type = (query.get('chat_type') or [''])[0].strip()
+            sender_filter = (query.get('sender') or [''])[0].strip()
+            group_filter = (query.get('group') or [''])[0].strip()
             time_range = (query.get('time_range') or [''])[0].strip()
             start_date = (query.get('start_date') or [''])[0].strip()
             end_date = (query.get('end_date') or [''])[0].strip()
             limit = clamp(parse_int((query.get('limit') or ['100'])[0], 100), 1, 500)
             offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
-            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter)
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
             detail_base = os.environ.get('VIEWER_DETAIL_BASE') or form_action
-            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base).encode('utf-8')
+            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base, sender_filter, group_filter).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
