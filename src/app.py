@@ -706,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
             offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
             rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
-            detail_base = os.environ.get('VIEWER_DETAIL_BASE', '')
+            detail_base = os.environ.get('VIEWER_DETAIL_BASE') or form_action
             body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
