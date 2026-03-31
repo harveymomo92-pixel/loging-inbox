@@ -494,7 +494,7 @@ def save_event(payload):
     }
 
 
-def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date='', sender_filter='', group_filter=''):
+def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', time_range='', start_date='', end_date='', sender_filter='', group_filter='', analysis_status=''):
     conn = db()
     cur = conn.cursor()
     clauses = ["NOT (m.message_type = 'unknown' AND COALESCE(m.text_content, '') = '' AND COALESCE(m.caption, '') = '')"]
@@ -522,6 +522,13 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
         clauses.append('LOWER(COALESCE(m.chat_jid, \'\')) LIKE ?')
         group_needle = f"%{group_filter.lower()}%"
         params.append(group_needle)
+
+    if analysis_status:
+        if analysis_status == 'fallback':
+            clauses.append("COALESCE(m.text_content, '') = '[unknown message payload from bridge]'")
+        else:
+            clauses.append("COALESCE(ic.status, '') = ?")
+            params.append(analysis_status)
 
     start_ts, end_ts = resolve_time_range(time_range, start_date, end_date)
     if start_ts is not None:
@@ -589,7 +596,69 @@ def delete_log_record(message_row_id):
     return True, message_id
 
 
-def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/viewer', detail_base='', sender_filter='', group_filter=''):
+def queue_log_record_for_analysis(message_row_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute('SELECT message_id FROM messages WHERE id = ? LIMIT 1', (message_row_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+    cur.execute('''
+      UPDATE image_contexts
+      SET status='pending', error_text='', updated_at=?, decision_reason='manual_override'
+      WHERE message_id=?
+    ''', (now_iso(), row['message_id']))
+    conn.commit()
+    conn.close()
+    return True
+
+
+def retry_log_record_analysis(message_row_id):
+    return queue_log_record_for_analysis(message_row_id)
+
+
+def render_whitelist_html(cfg):
+    def list_section(title, list_name, items):
+        rendered = []
+        for item in items:
+            rendered.append(f"<li style='margin-bottom:8px'>{escape_html(item)} <form method='post' action='/viewer/whitelist' style='display:inline-block;margin-left:8px'><input type='hidden' name='action' value='remove'/><input type='hidden' name='list' value='{escape_html(list_name)}'/><input type='hidden' name='value' value='{escape_html(item)}'/><button type='submit' style='padding:4px 8px;border:0;border-radius:6px;background:#dc2626;color:#fff'>Remove</button></form></li>")
+        rendered_html = ''.join(rendered) or '<li>-</li>'
+        return f"""
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:16px;border-radius:12px;margin-bottom:16px'>
+          <h2 style='margin-top:0'>{escape_html(title)}</h2>
+          <ul>{rendered_html}</ul>
+          <form method='post' action='/viewer/whitelist' style='display:flex;gap:8px;flex-wrap:wrap'>
+            <input type='hidden' name='action' value='add'/>
+            <input type='hidden' name='list' value='{escape_html(list_name)}'/>
+            <input type='text' name='value' placeholder='Add {escape_html(title)}...' style='flex:1;min-width:240px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
+            <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff'>Add</button>
+          </form>
+        </div>
+        """
+
+    return f"""
+    <html>
+      <head><title>Image Analysis Whitelist</title></head>
+      <body style='font-family:sans-serif;max-width:1000px;margin:32px auto;background:#f8fafc;color:#111827'>
+        <a href='/viewer' style='color:#2563eb;text-decoration:none'>← Back to viewer</a>
+        <h1>Image Analysis Whitelist</h1>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:16px;border-radius:12px;margin-bottom:16px'>
+          <div><b>Enabled:</b> {escape_html(str(cfg.get('enabled', True)).lower())}</div>
+          <form method='post' action='/viewer/whitelist' style='margin-top:12px'>
+            <input type='hidden' name='action' value='toggle'/>
+            <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#111827;color:#fff'>Toggle enabled</button>
+          </form>
+        </div>
+        {list_section('Groups', 'groups', cfg.get('groups', []))}
+        {list_section('Users', 'users', cfg.get('users', []))}
+        {list_section('Sender Names', 'senderNames', cfg.get('senderNames', []))}
+      </body>
+    </html>
+    """
+
+
+def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/viewer', detail_base='', sender_filter='', group_filter='', analysis_status=''):
     items = []
     for row in rows:
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
@@ -630,6 +699,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
     selected_msg_type = message_type or ''
     selected_chat_type = chat_type or ''
     selected_time_range = time_range or ''
+    selected_analysis_status = analysis_status or ''
 
     def selected(current, expected):
         return 'selected' if current == expected else ''
@@ -642,6 +712,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
         'chat_type': chat_type,
         'sender': sender_filter,
         'group': group_filter,
+        'status': analysis_status,
         'limit': str(limit),
         'time_range': time_range,
         'start_date': start_date,
@@ -686,6 +757,15 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
           </select>
           <input type='text' name='sender' placeholder='Filter user/sender...' value='{escape_html(sender_filter)}' style='min-width:180px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
           <input type='text' name='group' placeholder='Filter group/chat...' value='{escape_html(group_filter)}' style='min-width:180px;padding:10px;border:1px solid #d1d5db;border-radius:8px'/>
+          <select name='status' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
+            <option value='' {selected(selected_analysis_status, '')}>Analysis status: all</option>
+            <option value='pending' {selected(selected_analysis_status, 'pending')}>pending</option>
+            <option value='processing' {selected(selected_analysis_status, 'processing')}>processing</option>
+            <option value='completed' {selected(selected_analysis_status, 'completed')}>completed</option>
+            <option value='failed' {selected(selected_analysis_status, 'failed')}>failed</option>
+            <option value='skipped' {selected(selected_analysis_status, 'skipped')}>skipped</option>
+            <option value='fallback' {selected(selected_analysis_status, 'fallback')}>fallback</option>
+          </select>
           <select name='time_range' style='padding:10px;border:1px solid #d1d5db;border-radius:8px'>
             <option value='' {selected(selected_time_range, '')}>Any time</option>
             <option value='today' {selected(selected_time_range, 'today')}>Today</option>
@@ -705,6 +785,10 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
           <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff'>Apply</button>
           <a href='{escape_html(form_action)}' style='padding:10px 16px;border-radius:8px;background:#e5e7eb;color:#111827;text-decoration:none'>Reset</a>
         </form>
+
+        <div style='margin:-6px 0 18px 0'>
+          <a href='/viewer/whitelist' style='padding:10px 16px;border-radius:8px;background:#111827;color:#fff;text-decoration:none'>Manage whitelist</a>
+        </div>
 
         <div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;background:#fff;padding:12px 14px;border-radius:12px;border:1px solid #e5e7eb;margin-bottom:16px'>
           <div><b>Total:</b> {total} logs · <b>Page:</b> {page}/{total_pages}</div>
@@ -780,6 +864,14 @@ def render_detail_html(row, back_href='/viewer'):
         <div style='background:#fff3f2;border:1px solid #fecaca;padding:18px;border-radius:12px'>
           <h2 style='color:#991b1b;margin-top:0'>Danger zone</h2>
           <p style='color:#7f1d1d'>Delete this record from the database manually. Related <code>media_files</code> and <code>image_contexts</code> rows will also be removed. Physical media files are kept.</p>
+          <div style='margin-bottom:12px'>
+            <form method='post' action='/message/{escape_html(str(row.get('id') or '0'))}/queue-analysis' style='display:inline-block;margin-right:8px'>
+              <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer'>Queue for analysis</button>
+            </form>
+            <form method='post' action='/message/{escape_html(str(row.get('id') or '0'))}/retry-analysis' style='display:inline-block'>
+              <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#7c3aed;color:#fff;cursor:pointer'>Retry analysis</button>
+            </form>
+          </div>
           <form method='post' action='/message/{escape_html(str(row.get('id') or '0'))}/delete' onsubmit="return confirm('Delete this record from database? This cannot be undone from the viewer.');">
             <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#dc2626;color:#fff;cursor:pointer'>Delete record</button>
           </form>
@@ -803,10 +895,11 @@ class Handler(BaseHTTPRequestHandler):
             chat_type = (query.get('chat_type') or [''])[0].strip()
             sender_filter = (query.get('sender') or [''])[0].strip()
             group_filter = (query.get('group') or [''])[0].strip()
+            analysis_status = (query.get('status') or [''])[0].strip()
             time_range = (query.get('time_range') or [''])[0].strip()
             start_date = (query.get('start_date') or [''])[0].strip()
             end_date = (query.get('end_date') or [''])[0].strip()
-            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter)
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter, analysis_status)
             return write_json(self, 200, {
                 'items': rows,
                 'limit': limit,
@@ -820,15 +913,25 @@ class Handler(BaseHTTPRequestHandler):
             chat_type = (query.get('chat_type') or [''])[0].strip()
             sender_filter = (query.get('sender') or [''])[0].strip()
             group_filter = (query.get('group') or [''])[0].strip()
+            analysis_status = (query.get('status') or [''])[0].strip()
             time_range = (query.get('time_range') or [''])[0].strip()
             start_date = (query.get('start_date') or [''])[0].strip()
             end_date = (query.get('end_date') or [''])[0].strip()
             limit = clamp(parse_int((query.get('limit') or ['100'])[0], 100), 1, 500)
             offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
-            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter)
+            rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date, sender_filter, group_filter, analysis_status)
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/viewer')
             detail_base = os.environ.get('VIEWER_DETAIL_BASE') or ''
-            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base, sender_filter, group_filter).encode('utf-8')
+            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base, sender_filter, group_filter, analysis_status).encode('utf-8')
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path == '/viewer/whitelist':
+            cfg = load_image_analysis_whitelist()
+            body = render_whitelist_html(cfg).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
@@ -851,6 +954,27 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path == '/viewer/whitelist':
+            length = int(self.headers.get('Content-Length', '0'))
+            raw = self.rfile.read(length).decode('utf-8') if length else ''
+            form = parse_qs(raw)
+            action = (form.get('action') or [''])[0]
+            value = (form.get('value') or [''])[0].strip()
+            list_name = (form.get('list') or [''])[0].strip()
+            cfg = load_image_analysis_whitelist()
+            if action == 'toggle':
+                cfg['enabled'] = not cfg.get('enabled', True)
+            elif action == 'add' and list_name in ('groups', 'users', 'senderNames') and value:
+                if value not in cfg[list_name]:
+                    cfg[list_name].append(value)
+            elif action == 'remove' and list_name in ('groups', 'users', 'senderNames') and value:
+                cfg[list_name] = [x for x in cfg[list_name] if x != value]
+            with open(IMAGE_ANALYSIS_WHITELIST_PATH, 'w', encoding='utf-8') as file_obj:
+                json.dump(cfg, file_obj, ensure_ascii=False, indent=2)
+            self.send_response(303)
+            self.send_header('Location', '/viewer/whitelist')
+            self.end_headers()
+            return
         if parsed.path.startswith('/loging-inbox/message/') and parsed.path.endswith('/delete'):
             message_row_id = parse_int(parsed.path.replace('/loging-inbox/message/', '').replace('/delete', '').strip('/'), 0)
             ok, message_id = delete_log_record(message_row_id)
@@ -869,6 +993,20 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
             return write_json(self, 404, {'error': 'Not found'})
+        if parsed.path.startswith('/message/') and parsed.path.endswith('/queue-analysis'):
+            message_row_id = parse_int(parsed.path.replace('/message/', '').replace('/queue-analysis', '').strip('/'), 0)
+            queue_log_record_for_analysis(message_row_id)
+            self.send_response(303)
+            self.send_header('Location', f'/message/{message_row_id}')
+            self.end_headers()
+            return
+        if parsed.path.startswith('/message/') and parsed.path.endswith('/retry-analysis'):
+            message_row_id = parse_int(parsed.path.replace('/message/', '').replace('/retry-analysis', '').strip('/'), 0)
+            retry_log_record_analysis(message_row_id)
+            self.send_response(303)
+            self.send_header('Location', f'/message/{message_row_id}')
+            self.end_headers()
+            return
         if parsed.path == '/webhook/whatsapp':
             try:
                 payload = read_json(self)
