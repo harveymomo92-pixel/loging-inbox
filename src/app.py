@@ -494,7 +494,7 @@ def fetch_log_detail(message_row_id):
     return dict(row) if row else None
 
 
-def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox'):
+def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox', detail_base=''):
     items = []
     for row in rows:
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
@@ -522,7 +522,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
           </div>
           <div style='margin-top:8px;color:#333'><b>Summary:</b> {summary}</div>
           <div style='margin-top:4px;color:#555'><b>Timestamp:</b> {escape_html(format_timestamp(row.get('timestamp')) or '-')}</div>
-          <div style='margin-top:10px'><a href='/message/{escape_html(str(row.get('id')))}' style='color:#2563eb;text-decoration:none'><b>Open detail →</b></a></div>
+          <div style='margin-top:10px'><a href='{escape_html(detail_base)}/message/{escape_html(str(row.get('id')))}' style='color:#2563eb;text-decoration:none'><b>Open detail →</b></a></div>
         </div>
         """)
 
@@ -612,7 +612,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
     """
 
 
-def render_detail_html(row):
+def render_detail_html(row, back_href='/loging-inbox'):
     if not row:
         return "<html><body><h1>Message not found</h1></body></html>"
 
@@ -629,7 +629,7 @@ def render_detail_html(row):
     <html>
       <head><title>Log Detail</title></head>
       <body style='font-family:sans-serif;max-width:1100px;margin:32px auto;background:#f8fafc;color:#111827'>
-        <a href='/loging-inbox' style='color:#2563eb;text-decoration:none'>← Back to viewer</a>
+        <a href='{escape_html(back_href)}' style='color:#2563eb;text-decoration:none'>← Back to viewer</a>
         <h1>Message Detail</h1>
         <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
           <div><b>ID:</b> {escape_html(str(row.get('id') or '-'))}</div>
@@ -706,17 +706,20 @@ class Handler(BaseHTTPRequestHandler):
             offset = max(0, parse_int((query.get('offset') or ['0'])[0], 0))
             rows, total = fetch_logs(limit, offset, search, message_type, chat_type, time_range, start_date, end_date)
             form_action = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
-            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action).encode('utf-8')
+            detail_base = os.environ.get('VIEWER_DETAIL_BASE', '')
+            body = render_html(rows, total, search, message_type, chat_type, limit, offset, time_range, start_date, end_date, form_action, detail_base).encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
             self.end_headers()
             self.wfile.write(body)
             return
-        if parsed.path.startswith('/message/'):
-            message_row_id = parse_int(parsed.path.replace('/message/', ''), 0)
+        if parsed.path.startswith('/message/') or parsed.path.startswith('/loging-inbox/message/'):
+            prefix = '/loging-inbox/message/' if parsed.path.startswith('/loging-inbox/message/') else '/message/'
+            message_row_id = parse_int(parsed.path.replace(prefix, ''), 0)
             row = fetch_log_detail(message_row_id)
-            body = render_detail_html(row).encode('utf-8')
+            back_href = os.environ.get('VIEWER_FORM_ACTION', '/loging-inbox')
+            body = render_detail_html(row, back_href).encode('utf-8')
             self.send_response(200 if row else 404)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('Content-Length', str(len(body)))
