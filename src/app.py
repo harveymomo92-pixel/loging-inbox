@@ -96,6 +96,7 @@ DB_PATH = os.path.join(DATA_DIR, 'inbox.db')
 HOST = '0.0.0.0'
 PORT = int(os.environ.get('PORT', '8570'))
 IMAGE_CONTEXT_MODE = os.environ.get('IMAGE_CONTEXT_MODE', 'placeholder')
+IMAGE_ANALYSIS_WHITELIST_PATH = os.environ.get('IMAGE_ANALYSIS_WHITELIST_PATH', os.path.join(BASE_DIR, 'config', 'image-analysis-whitelist.json'))
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(MEDIA_DIR, exist_ok=True)
@@ -153,6 +154,11 @@ def init_db():
       model_name TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       error_text TEXT,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      locked_at TEXT,
+      worker_id TEXT,
+      analysis_source TEXT,
+      decision_reason TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -166,12 +172,57 @@ def init_db():
     CREATE UNIQUE INDEX IF NOT EXISTS idx_image_contexts_unique_message_id ON image_contexts(message_id);
     CREATE INDEX IF NOT EXISTS idx_image_contexts_status ON image_contexts(status);
     ''')
+    for sql in [
+        "ALTER TABLE image_contexts ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE image_contexts ADD COLUMN locked_at TEXT",
+        "ALTER TABLE image_contexts ADD COLUMN worker_id TEXT",
+        "ALTER TABLE image_contexts ADD COLUMN analysis_source TEXT",
+        "ALTER TABLE image_contexts ADD COLUMN decision_reason TEXT"
+    ]:
+        try:
+            cur.execute(sql)
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
 
 def now_iso():
     return datetime.utcnow().isoformat() + 'Z'
+
+
+def load_image_analysis_whitelist():
+    try:
+        with open(IMAGE_ANALYSIS_WHITELIST_PATH, 'r', encoding='utf-8') as file_obj:
+            data = json.load(file_obj)
+        if not isinstance(data, dict):
+            raise ValueError('Whitelist config must be an object')
+        return {
+            'enabled': bool(data.get('enabled', True)),
+            'groups': [str(x).strip() for x in data.get('groups', []) if str(x).strip()],
+            'users': [str(x).strip() for x in data.get('users', []) if str(x).strip()],
+            'senderNames': [str(x).strip() for x in data.get('senderNames', []) if str(x).strip()],
+        }
+    except Exception:
+        return {'enabled': True, 'groups': [], 'users': [], 'senderNames': []}
+
+
+def image_analysis_decision(chat_jid, sender_jid, sender_name):
+    cfg = load_image_analysis_whitelist()
+    if not cfg.get('enabled', True):
+        return True, 'whitelist_disabled'
+
+    chat_jid = (chat_jid or '').strip()
+    sender_jid = (sender_jid or '').strip()
+    sender_name = (sender_name or '').strip()
+
+    if chat_jid and chat_jid in cfg.get('groups', []):
+        return True, 'whitelist_group'
+    if sender_jid and sender_jid in cfg.get('users', []):
+        return True, 'whitelist_user'
+    if sender_name and sender_name in cfg.get('senderNames', []):
+        return True, 'whitelist_sender_name'
+    return False, 'not_in_whitelist'
 
 
 def read_json(handler):
@@ -391,18 +442,32 @@ def save_event(payload):
               message.get('height'),
             ))
 
+        should_analyze, decision_reason = image_analysis_decision(
+            chat.get('jid', ''),
+            message.get('from') or message.get('sender_jid', ''),
+            message.get('name') or message.get('sender_name', ''),
+        )
+
         if not existing_context:
             cur.execute('''
               INSERT INTO image_contexts (
-                message_id, status, updated_at
-              ) VALUES (?, ?, ?)
-            ''', (message_id, 'pending', now_iso()))
+                message_id, status, error_text, analysis_source, decision_reason, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (
+              message_id,
+              'pending' if should_analyze else 'skipped',
+              '' if should_analyze else 'not in analysis whitelist',
+              None,
+              decision_reason,
+              now_iso(),
+              now_iso(),
+            ))
 
-        if local_path:
+        if local_path and should_analyze:
             image_context = resolve_image_context(local_path, caption)
             cur.execute('''
               UPDATE image_contexts
-              SET summary=?, objects_json=?, ocr_text=?, tags_json=?, confidence=?, model_name=?, status=?, error_text=?, updated_at=?
+              SET summary=?, objects_json=?, ocr_text=?, tags_json=?, confidence=?, model_name=?, status=?, error_text=?, analysis_source=?, updated_at=?
               WHERE message_id=?
             ''', (
               image_context['summary'],
@@ -413,6 +478,7 @@ def save_event(payload):
               image_context['model_name'],
               image_context['status'],
               image_context['error_text'],
+              'placeholder' if IMAGE_CONTEXT_MODE != 'agent' else 'agent',
               now_iso(),
               message_id,
             ))
