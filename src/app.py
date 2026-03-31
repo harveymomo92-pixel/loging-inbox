@@ -93,7 +93,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, 'data')
 MEDIA_DIR = os.path.join(DATA_DIR, 'media')
 DB_PATH = os.path.join(DATA_DIR, 'inbox.db')
-HOST = '127.0.0.1'
+HOST = '0.0.0.0'
 PORT = int(os.environ.get('PORT', '8570'))
 IMAGE_CONTEXT_MODE = os.environ.get('IMAGE_CONTEXT_MODE', 'placeholder')
 
@@ -161,7 +161,9 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
     CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(message_type);
     CREATE INDEX IF NOT EXISTS idx_media_message_id ON media_files(message_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_media_unique_message_id ON media_files(message_id);
     CREATE INDEX IF NOT EXISTS idx_image_contexts_message_id ON image_contexts(message_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_image_contexts_unique_message_id ON image_contexts(message_id);
     CREATE INDEX IF NOT EXISTS idx_image_contexts_status ON image_contexts(status);
     ''')
     conn.commit()
@@ -356,34 +358,45 @@ def save_event(payload):
         sha256 = ''
         file_size = None
 
-        if media_url:
+        cur.execute('SELECT id, local_path, sha256, file_size FROM media_files WHERE message_id=? LIMIT 1', (message_id,))
+        existing_media = cur.fetchone()
+        cur.execute('SELECT id, status FROM image_contexts WHERE message_id=? LIMIT 1', (message_id,))
+        existing_context = cur.fetchone()
+
+        if media_url and not existing_media:
             media_saved = download_media(media_url, message_id, mime_type)
             local_path = media_saved['local_path']
             sha256 = media_saved['sha256']
             file_size = media_saved['file_size']
+        elif existing_media:
+            local_path = existing_media['local_path'] or ''
+            sha256 = existing_media['sha256'] or ''
+            file_size = existing_media['file_size']
 
-        cur.execute('''
-          INSERT INTO media_files (
-            message_id, media_type, mime_type, original_url, local_path, sha256,
-            file_size, width, height
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-          message_id,
-          'image',
-          mime_type,
-          media_url,
-          local_path,
-          sha256,
-          file_size,
-          message.get('width'),
-          message.get('height'),
-        ))
+        if not existing_media:
+            cur.execute('''
+              INSERT INTO media_files (
+                message_id, media_type, mime_type, original_url, local_path, sha256,
+                file_size, width, height
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+              message_id,
+              'image',
+              mime_type,
+              media_url,
+              local_path,
+              sha256,
+              file_size,
+              message.get('width'),
+              message.get('height'),
+            ))
 
-        cur.execute('''
-          INSERT INTO image_contexts (
-            message_id, status, updated_at
-          ) VALUES (?, ?, ?)
-        ''', (message_id, 'pending', now_iso()))
+        if not existing_context:
+            cur.execute('''
+              INSERT INTO image_contexts (
+                message_id, status, updated_at
+              ) VALUES (?, ?, ?)
+            ''', (message_id, 'pending', now_iso()))
 
         if local_path:
             image_context = resolve_image_context(local_path, caption)
