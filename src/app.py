@@ -715,28 +715,6 @@ def render_detail_html(row, back_href='/loging-inbox'):
 
 
 class Handler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        if parsed.path.startswith('/loging-inbox/message/') and parsed.path.endswith('/delete'):
-            message_row_id = parse_int(parsed.path.replace('/loging-inbox/message/', '').replace('/delete', '').strip('/'), 0)
-            ok, message_id = delete_log_record(message_row_id)
-            if ok:
-                self.send_response(303)
-                self.send_header('Location', '/loging-inbox')
-                self.end_headers()
-                return
-            return write_json(self, 404, {'error': 'Not found'})
-        if parsed.path.startswith('/message/') and parsed.path.endswith('/delete'):
-            message_row_id = parse_int(parsed.path.replace('/message/', '').replace('/delete', '').strip('/'), 0)
-            ok, message_id = delete_log_record(message_row_id)
-            if ok:
-                self.send_response(303)
-                self.send_header('Location', '/loging-inbox')
-                self.end_headers()
-                return
-            return write_json(self, 404, {'error': 'Not found'})
-        return write_json(self, 404, {'error': 'Not found'})
-
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == '/health':
@@ -798,6 +776,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        if parsed.path.startswith('/loging-inbox/message/') and parsed.path.endswith('/delete'):
+            message_row_id = parse_int(parsed.path.replace('/loging-inbox/message/', '').replace('/delete', '').strip('/'), 0)
+            ok, message_id = delete_log_record(message_row_id)
+            if ok:
+                self.send_response(303)
+                self.send_header('Location', '/loging-inbox')
+                self.end_headers()
+                return
+            return write_json(self, 404, {'error': 'Not found'})
+        if parsed.path.startswith('/message/') and parsed.path.endswith('/delete'):
+            message_row_id = parse_int(parsed.path.replace('/message/', '').replace('/delete', '').strip('/'), 0)
+            ok, message_id = delete_log_record(message_row_id)
+            if ok:
+                self.send_response(303)
+                self.send_header('Location', '/loging-inbox')
+                self.end_headers()
+                return
+            return write_json(self, 404, {'error': 'Not found'})
         if parsed.path == '/webhook/whatsapp':
             try:
                 payload = read_json(self)
