@@ -504,6 +504,24 @@ def fetch_log_detail(message_row_id):
     return dict(row) if row else None
 
 
+def delete_log_record(message_row_id):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute('SELECT message_id FROM messages WHERE id = ? LIMIT 1', (message_row_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False, None
+
+    message_id = row['message_id']
+    cur.execute('DELETE FROM image_contexts WHERE message_id = ?', (message_id,))
+    cur.execute('DELETE FROM media_files WHERE message_id = ?', (message_id,))
+    cur.execute('DELETE FROM messages WHERE id = ?', (message_row_id,))
+    conn.commit()
+    conn.close()
+    return True, message_id
+
+
 def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox', detail_base='', sender_filter='', group_filter=''):
     items = []
     for row in rows:
@@ -680,9 +698,16 @@ def render_detail_html(row, back_href='/loging-inbox'):
           <div><b>Confidence:</b> {escape_html(str(row.get('confidence') or '-'))}</div>
           <div><b>Error:</b> {escape_html(row.get('error_text') or '-')}</div>
         </div>
-        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px'>
+        <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
           <h2>Raw payload JSON</h2>
           <pre style='white-space:pre-wrap;word-break:break-word;background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px'>{raw_payload}</pre>
+        </div>
+        <div style='background:#fff3f2;border:1px solid #fecaca;padding:18px;border-radius:12px'>
+          <h2 style='color:#991b1b;margin-top:0'>Danger zone</h2>
+          <p style='color:#7f1d1d'>Delete this record from the database manually. Related <code>media_files</code> and <code>image_contexts</code> rows will also be removed. Physical media files are kept.</p>
+          <form method='post' action='/loging-inbox/message/{escape_html(str(row.get('id') or '0'))}/delete' onsubmit="return confirm('Delete this record from database? This cannot be undone from the viewer.');">
+            <button type='submit' style='padding:10px 16px;border:0;border-radius:8px;background:#dc2626;color:#fff;cursor:pointer'>Delete record</button>
+          </form>
         </div>
       </body>
     </html>
@@ -690,6 +715,28 @@ def render_detail_html(row, back_href='/loging-inbox'):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        if parsed.path.startswith('/loging-inbox/message/') and parsed.path.endswith('/delete'):
+            message_row_id = parse_int(parsed.path.replace('/loging-inbox/message/', '').replace('/delete', '').strip('/'), 0)
+            ok, message_id = delete_log_record(message_row_id)
+            if ok:
+                self.send_response(303)
+                self.send_header('Location', '/loging-inbox')
+                self.end_headers()
+                return
+            return write_json(self, 404, {'error': 'Not found'})
+        if parsed.path.startswith('/message/') and parsed.path.endswith('/delete'):
+            message_row_id = parse_int(parsed.path.replace('/message/', '').replace('/delete', '').strip('/'), 0)
+            ok, message_id = delete_log_record(message_row_id)
+            if ok:
+                self.send_response(303)
+                self.send_header('Location', '/loging-inbox')
+                self.end_headers()
+                return
+            return write_json(self, 404, {'error': 'Not found'})
+        return write_json(self, 404, {'error': 'Not found'})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == '/health':
