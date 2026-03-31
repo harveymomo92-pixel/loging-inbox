@@ -539,7 +539,7 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
 
     query = f'''
       SELECT m.id, m.message_id, m.chat_jid, m.sender_jid, m.sender_name, m.chat_type, m.message_type,
-             m.text_content, m.caption, m.timestamp, ic.status AS image_context_status
+             m.text_content, m.caption, m.timestamp, ic.status AS image_context_status, ic.decision_reason, ic.analysis_source
       FROM messages m
       LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
       {where_sql}
@@ -558,7 +558,8 @@ def fetch_log_detail(message_row_id):
     cur = conn.cursor()
     cur.execute('''
       SELECT m.*, mf.local_path, mf.mime_type, mf.original_url, mf.sha256, mf.file_size, mf.width, mf.height,
-             ic.summary, ic.ocr_text, ic.tags_json, ic.status AS image_context_status, ic.error_text, ic.model_name, ic.confidence
+             ic.summary, ic.ocr_text, ic.tags_json, ic.status AS image_context_status, ic.error_text, ic.model_name, ic.confidence,
+             ic.attempt_count, ic.locked_at, ic.worker_id, ic.analysis_source, ic.decision_reason
       FROM messages m
       LEFT JOIN media_files mf ON mf.message_id = m.message_id
       LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
@@ -604,6 +605,8 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
         msg_type = escape_html(row.get('message_type') or 'unknown')
         chat_badge = escape_html(row.get('chat_type') or 'unknown')
         image_status = escape_html(row.get('image_context_status') or 'n/a')
+        decision_reason = escape_html(row.get('decision_reason') or '')
+        analysis_source = escape_html(row.get('analysis_source') or '')
         fallback_badge = f"<span style='{badge_style('fallback')}'>{escape_html('fallback')}</span>" if is_fallback_unknown else ''
 
         items.append(f"""
@@ -619,6 +622,7 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
           </div>
           <div style='margin-top:8px;color:#333'><b>Summary:</b> {summary}</div>
           <div style='margin-top:4px;color:#555'><b>Timestamp:</b> {escape_html(format_timestamp(row.get('timestamp')) or '-')}</div>
+          <div style='margin-top:4px;color:#6b7280'><b>Decision:</b> {decision_reason or '-'} · <b>Source:</b> {analysis_source or '-'}</div>
           <div style='margin-top:10px'><a href='{escape_html(detail_base)}/message/{escape_html(str(row.get('id')))}' style='color:#2563eb;text-decoration:none'><b>Open detail →</b></a></div>
         </div>
         """)
@@ -757,6 +761,11 @@ def render_detail_html(row, back_href='/loging-inbox'):
         <div style='background:#fff;border:1px solid #e5e7eb;padding:18px;border-radius:12px;margin-bottom:16px'>
           <h2>Processing status</h2>
           <div><b>Status:</b> {escape_html(row.get('image_context_status') or '-')}</div>
+          <div><b>Decision:</b> {escape_html(row.get('decision_reason') or '-')}</div>
+          <div><b>Source:</b> {escape_html(row.get('analysis_source') or '-')}</div>
+          <div><b>Worker ID:</b> {escape_html(row.get('worker_id') or '-')}</div>
+          <div><b>Locked at:</b> {escape_html(row.get('locked_at') or '-')}</div>
+          <div><b>Attempt count:</b> {escape_html(str(row.get('attempt_count') or '0'))}</div>
           <div><b>Summary:</b> {escape_html(row.get('summary') or '-')}</div>
           <div><b>OCR:</b> {escape_html(row.get('ocr_text') or '-')}</div>
           <div><b>Tags:</b> {escape_html(row.get('tags_json') or '-')}</div>
