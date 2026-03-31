@@ -1,0 +1,13 @@
+[Unit]
+Description=Loging Inbox Image Worker
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.openclaw/workspace/loging inbox
+ExecStart=/usr/bin/python3 /root/.openclaw/workspace/loging\ inbox/src/image_worker.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
