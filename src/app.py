@@ -462,9 +462,9 @@ def fetch_logs(limit=50, offset=0, search='', message_type='', chat_type='', tim
     total = cur.fetchone()[0]
 
     query = f'''
-      SELECT m.*, mf.local_path, mf.mime_type, ic.summary, ic.ocr_text, ic.tags_json, ic.status AS image_context_status
+      SELECT m.id, m.message_id, m.chat_jid, m.sender_jid, m.sender_name, m.chat_type, m.message_type,
+             m.text_content, m.caption, m.timestamp, ic.status AS image_context_status
       FROM messages m
-      LEFT JOIN media_files mf ON mf.message_id = m.message_id
       LEFT JOIN image_contexts ic ON ic.message_id = m.message_id
       {where_sql}
       ORDER BY COALESCE(m.timestamp, 0) DESC, m.id DESC
@@ -497,21 +497,15 @@ def fetch_log_detail(message_row_id):
 def render_html(rows, total, search='', message_type='', chat_type='', limit=100, offset=0, time_range='', start_date='', end_date='', form_action='/loging-inbox'):
     items = []
     for row in rows:
-        preview = ''
-        local_path = row.get('local_path') or ''
-        if local_path and os.path.exists(local_path):
-            with open(local_path, 'rb') as file_obj:
-                b64 = base64.b64encode(file_obj.read()).decode('ascii')
-            mime = row.get('mime_type') or 'image/jpeg'
-            preview = f'<div style="margin-top:10px"><img src="data:{escape_html(mime)};base64,{b64}" style="max-width:240px;border-radius:8px;border:1px solid #ddd"/></div>'
-
         sender = escape_html(row.get('sender_name') or row.get('sender_jid') or '-')
         chat_jid = escape_html(row.get('chat_jid') or '-')
-        text_content = escape_html(row.get('text_content') or '')
-        caption = escape_html(row.get('caption') or '')
-        summary = escape_html(row.get('summary') or '-')
-        ocr_text = escape_html(row.get('ocr_text') or '-')
-        tags_json = escape_html(row.get('tags_json') or '-')
+        text_raw = row.get('text_content') or ''
+        caption_raw = row.get('caption') or ''
+        summary_text = text_raw or caption_raw or ''
+        summary_text = summary_text.replace('\n', ' ').strip()
+        if len(summary_text) > 180:
+            summary_text = summary_text[:177] + '...'
+        summary = escape_html(summary_text or '-')
         msg_type = escape_html(row.get('message_type') or 'unknown')
         chat_badge = escape_html(row.get('chat_type') or 'unknown')
         image_status = escape_html(row.get('image_context_status') or 'n/a')
@@ -526,13 +520,8 @@ def render_html(rows, total, search='', message_type='', chat_type='', limit=100
               <span style='{badge_style(image_status)}'>{image_status}</span>
             </div>
           </div>
-          <div style='margin-top:8px;color:#333'><b>Text:</b> {text_content or '-'}</div>
-          <div style='margin-top:4px;color:#333'><b>Caption:</b> {caption or '-'}</div>
+          <div style='margin-top:8px;color:#333'><b>Summary:</b> {summary}</div>
           <div style='margin-top:4px;color:#555'><b>Timestamp:</b> {escape_html(format_timestamp(row.get('timestamp')) or '-')}</div>
-          {preview}
-          <div style='margin-top:8px'><b>Image context:</b> {summary}</div>
-          <div style='margin-top:4px'><b>OCR:</b> {ocr_text}</div>
-          <div style='margin-top:4px'><b>Tags:</b> {tags_json}</div>
           <div style='margin-top:10px'><a href='/message/{escape_html(str(row.get('id')))}' style='color:#2563eb;text-decoration:none'><b>Open detail →</b></a></div>
         </div>
         """)
